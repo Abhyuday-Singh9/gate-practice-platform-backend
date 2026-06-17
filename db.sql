@@ -1,6 +1,6 @@
 ```sql
 -- =====================================================
--- GATE Practice Platform Database Schema (PostgreSQL)
+-- GATE Practice Platform Database Schema (PostgreSQL) updated
 -- =====================================================
 
 -- =========================
