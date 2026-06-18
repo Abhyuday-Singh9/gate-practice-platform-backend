@@ -1,8 +1,21 @@
-const { createApp } = require("./app");
+require("dotenv").config();
 
-const app = createApp();
+const { createApp } = require("./app");
+const { ensureInitialized } = require("./shared/auth/store");
+
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-  console.log(`GATE Practice Platform API running on port ${PORT}`);
+async function start() {
+  await ensureInitialized();
+
+  const app = createApp();
+
+  app.listen(PORT, () => {
+    console.log(`GATE Practice Platform API running on port ${PORT}`);
+  });
+}
+
+start().catch((error) => {
+  console.error("Failed to start server:", error);
+  process.exit(1);
 });

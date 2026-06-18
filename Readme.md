@@ -52,6 +52,18 @@ npm start
 
 The server listens on `PORT` or defaults to `3000`.
 
+Required environment variables for production:
+
+- `DATABASE_URL` or the individual `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`
+- `PGSSL=true` for hosted Postgres providers like Aiven if TLS is required
+- `ACCESS_TOKEN_SECRET`
+- `REFRESH_TOKEN_SECRET`
+- `PASSWORD_RESET_SECRET`
+- `EMAIL_VERIFY_SECRET`
+- `EMAIL_USER`
+- `EMAIL_APP_PASSWORD`
+- `APP_BASE_URL`
+
 ## Base URL
 
 All application routes are mounted under:
@@ -70,6 +82,7 @@ All routes currently return `501 Not Implemented`. They exist as route contracts
 
 - `POST /api/v1/auth/register`
 - `POST /api/v1/auth/login`
+- `POST /api/v1/auth/admin/login`
 - `POST /api/v1/auth/logout`
 - `POST /api/v1/auth/refresh-token`
 - `POST /api/v1/auth/forgot-password`
@@ -79,14 +92,14 @@ All routes currently return `501 Not Implemented`. They exist as route contracts
 
 ### Users
 
-- `GET /api/v1/users`
-- `POST /api/v1/users`
+- `GET /api/v1/users` `admin only`
+- `POST /api/v1/users` `admin only`
 - `GET /api/v1/users/me`
 - `PATCH /api/v1/users/me`
 - `GET /api/v1/users/me/stats`
 - `GET /api/v1/users/:userId`
 - `PATCH /api/v1/users/:userId`
-- `DELETE /api/v1/users/:userId`
+- `DELETE /api/v1/users/:userId` `admin only`
 - `GET /api/v1/users/:userId/stats`
 
 ### Branches
@@ -228,5 +241,25 @@ All routes currently return `501 Not Implemented`. They exist as route contracts
 
 ## Notes
 
-- This is intentionally route-only for now.
-- Business logic, validation, auth, and database access should be added in the next step.
+- Auth now uses PostgreSQL for users and auth tokens.
+- Refresh, reset, and verification tokens are stored hashed in SQL and are rotated/revoked there.
+- Gmail SMTP is used through `nodemailer` when `EMAIL_USER` and `EMAIL_APP_PASSWORD` are set.
+- A seeded development admin account is created automatically if no admin exists.
+- Default dev admin credentials:
+  - email: `admin@gateprep.local`
+  - password: `Admin@1234`
+- Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` to override the seeded admin account.
+
+## Using Aiven Free PostgreSQL
+
+Aiven’s Free Tier includes PostgreSQL with `1GB` storage and `1GB` RAM, and it is intended for development, prototyping, and small workloads. It is always free and does not require a credit card. For production workloads, Aiven recommends upgrading to a paid plan.
+
+Recommended setup:
+
+1. Create a free PostgreSQL service in the Aiven console.
+2. Copy the connection details or service URI from the console.
+3. Put the connection string into `DATABASE_URL`.
+4. Set `PGSSL=true` so the Node.js driver uses TLS.
+5. Keep `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and the token secrets in your local `.env`.
+
+If you use the Aiven connection URI directly, keep the full URI in `DATABASE_URL` and verify it matches the service details shown in the Aiven console.

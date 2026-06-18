@@ -1,4 +1,3 @@
-```sql
 -- =====================================================
 -- GATE Practice Platform Database Schema (PostgreSQL) updated
 -- =====================================================
@@ -56,9 +55,15 @@ CREATE TABLE users (
 
     email VARCHAR(255) NOT NULL UNIQUE,
 
+    role VARCHAR(20) NOT NULL DEFAULT 'user',
+
     password_hash TEXT NOT NULL,
 
     branch_id BIGINT,
+
+    is_email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+
+    last_login_at TIMESTAMP,
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
@@ -67,6 +72,81 @@ CREATE TABLE users (
     CONSTRAINT fk_user_branch
         FOREIGN KEY (branch_id)
         REFERENCES branches(id)
+        ON DELETE SET NULL
+);
+
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_users_updated_at
+BEFORE UPDATE ON users
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+-- =========================
+-- 5A. AUTH TOKENS
+-- =========================
+
+CREATE TABLE auth_refresh_tokens (
+    id BIGSERIAL PRIMARY KEY,
+
+    user_id BIGINT NOT NULL,
+
+    token_hash TEXT NOT NULL UNIQUE,
+
+    expires_at TIMESTAMP NOT NULL,
+
+    revoked_at TIMESTAMP,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_refresh_token_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE auth_password_reset_tokens (
+    id BIGSERIAL PRIMARY KEY,
+
+    user_id BIGINT NOT NULL,
+
+    token_hash TEXT NOT NULL UNIQUE,
+
+    expires_at TIMESTAMP NOT NULL,
+
+    revoked_at TIMESTAMP,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_password_reset_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE auth_email_verification_tokens (
+    id BIGSERIAL PRIMARY KEY,
+
+    user_id BIGINT NOT NULL,
+
+    token_hash TEXT NOT NULL UNIQUE,
+
+    expires_at TIMESTAMP NOT NULL,
+
+    revoked_at TIMESTAMP,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_email_verify_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
 );
 
 -- =========================
@@ -98,11 +178,13 @@ CREATE TABLE questions (
 
     CONSTRAINT fk_question_subject
         FOREIGN KEY (subject_id)
-        REFERENCES subjects(id),
+        REFERENCES subjects(id)
+        ON DELETE CASCADE,
 
     CONSTRAINT fk_question_topic
         FOREIGN KEY (topic_id)
         REFERENCES topics(id)
+        ON DELETE CASCADE
 );
 
 -- =========================
@@ -221,11 +303,13 @@ CREATE TABLE test_attempts (
 
     CONSTRAINT fk_attempt_user
         FOREIGN KEY (user_id)
-        REFERENCES users(id),
+        REFERENCES users(id)
+        ON DELETE CASCADE,
 
     CONSTRAINT fk_attempt_test
         FOREIGN KEY (test_id)
         REFERENCES tests(id)
+        ON DELETE CASCADE
 );
 
 -- =========================
@@ -255,6 +339,7 @@ CREATE TABLE attempt_answers (
     CONSTRAINT fk_answer_question
         FOREIGN KEY (question_id)
         REFERENCES questions(id)
+        ON DELETE CASCADE
 );
 
 -- =========================
@@ -356,11 +441,13 @@ CREATE TABLE question_feedback (
 
     CONSTRAINT fk_feedback_user
         FOREIGN KEY (user_id)
-        REFERENCES users(id),
+        REFERENCES users(id)
+        ON DELETE CASCADE,
 
     CONSTRAINT fk_feedback_question
         FOREIGN KEY (question_id)
         REFERENCES questions(id)
+        ON DELETE CASCADE
 );
 
 -- =========================
@@ -384,11 +471,13 @@ CREATE TABLE question_reports (
 
     CONSTRAINT fk_report_user
         FOREIGN KEY (user_id)
-        REFERENCES users(id),
+        REFERENCES users(id)
+        ON DELETE CASCADE,
 
     CONSTRAINT fk_report_question
         FOREIGN KEY (question_id)
         REFERENCES questions(id)
+        ON DELETE CASCADE
 );
 
 -- =====================================================
@@ -413,6 +502,15 @@ ON test_attempts(user_id);
 CREATE INDEX idx_test_attempts_test
 ON test_attempts(test_id);
 
+CREATE INDEX idx_auth_refresh_user
+ON auth_refresh_tokens(user_id);
+
+CREATE INDEX idx_auth_password_reset_user
+ON auth_password_reset_tokens(user_id);
+
+CREATE INDEX idx_auth_email_verify_user
+ON auth_email_verification_tokens(user_id);
+
 CREATE INDEX idx_bookmarks_user
 ON bookmarks(user_id);
 
@@ -421,4 +519,3 @@ ON mistake_book(user_id);
 
 CREATE INDEX idx_question_reports_status
 ON question_reports(status);
-```
