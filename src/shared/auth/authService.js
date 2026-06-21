@@ -1,7 +1,9 @@
+const crypto = require("crypto");
 const { createApiError } = require("../http/apiError");
 const { hashPassword, verifyPassword } = require("./password");
 const {
   consumeEmailVerificationToken,
+  consumeEmailVerificationOtp,
   consumePasswordResetToken,
   createUserRecord,
   deleteUser,
@@ -9,10 +11,13 @@ const {
   findRefreshToken,
   findUserByEmail,
   findUserById,
+  findLatestEmailVerificationToken,
   listUsers,
+  revokeAllEmailVerificationTokens,
   revokeAllUserTokens,
   revokeRefreshToken,
   storeEmailVerificationToken,
+  storeEmailVerificationOtp,
   storePasswordResetToken,
   storeRefreshToken,
   updateUser
@@ -29,6 +34,9 @@ const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 const PASSWORD_RESET_TTL_SECONDS = 60 * 60;
 const EMAIL_VERIFY_TTL_SECONDS = 24 * 60 * 60;
+const EMAIL_VERIFY_OTP_TTL_SECONDS = 10 * 60;
+const EMAIL_VERIFY_RESEND_COOLDOWN_SECONDS = 60;
+const UNVERIFIED_ACCOUNT_TTL_SECONDS = 24 * 60 * 60;
 
 function ensurePasswordStrength(password) {
   if (typeof password !== "string" || password.trim().length < 8) {
@@ -59,6 +67,31 @@ function publicUser(user) {
 
   const { passwordHash, ...publicData } = user;
   return publicData;
+}
+
+function isExpiredUnverifiedAccount(user) {
+  if (!user || user.isEmailVerified) {
+    return false;
+  }
+
+  const createdAt = new Date(user.createdAt);
+  const ageSeconds = Math.floor((Date.now() - createdAt.getTime()) / 1000);
+  return ageSeconds >= UNVERIFIED_ACCOUNT_TTL_SECONDS;
+}
+
+async function getOrDeleteExpiredUnverifiedUserByEmail(email) {
+  const user = await findUserByEmail(email);
+
+  if (!user) {
+    return null;
+  }
+
+  if (isExpiredUnverifiedAccount(user)) {
+    await deleteUser(user.id);
+    return null;
+  }
+
+  return user;
 }
 
 async function createSessionTokens(user) {
@@ -107,6 +140,30 @@ async function createVerificationToken(user) {
   return token;
 }
 
+async function createVerificationOtp(user) {
+  const otp = String(crypto.randomInt(100000, 1000000));
+  const expiresAt = Math.floor(Date.now() / 1000) + EMAIL_VERIFY_OTP_TTL_SECONDS;
+
+  await revokeAllEmailVerificationTokens(user.id);
+  await storeEmailVerificationOtp(user.id, otp, expiresAt);
+
+  return otp;
+}
+
+function getResendCooldownSeconds(tokenRow) {
+  if (!tokenRow?.createdAt) {
+    return 0;
+  }
+
+  const createdAtMs = new Date(tokenRow.createdAt).getTime();
+  if (Number.isNaN(createdAtMs)) {
+    return 0;
+  }
+
+  const ageSeconds = Math.floor((Date.now() - createdAtMs) / 1000);
+  return Math.max(0, EMAIL_VERIFY_RESEND_COOLDOWN_SECONDS - ageSeconds);
+}
+
 async function createResetToken(user) {
   const token = signToken(
     {
@@ -128,7 +185,7 @@ async function registerUser({ name, email, password, branchId }) {
   ensurePasswordStrength(password);
 
   const normalizedEmail = normalizeEmail(email);
-  const existingUser = await findUserByEmail(normalizedEmail);
+  const existingUser = await getOrDeleteExpiredUnverifiedUserByEmail(normalizedEmail);
 
   if (existingUser) {
     throw createApiError(409, "An account with this email already exists");
@@ -143,20 +200,55 @@ async function registerUser({ name, email, password, branchId }) {
     isEmailVerified: false
   });
 
-  const session = await createSessionTokens(user);
-  const verificationToken = await createVerificationToken(user);
-  const verificationLink = buildAuthLink("/api/v1/auth/verify-email", verificationToken);
+  const verificationOtp = await createVerificationOtp(user);
 
   await sendEmail({
     to: user.email,
-    subject: "Verify your email",
-    text: `Welcome ${user.name}.\n\nVerify your email by using this token in POST /api/v1/auth/verify-email:\n${verificationToken}\n\nOr open this link:\n${verificationLink}`
+    subject: "Your verification code",
+    text: `Welcome ${user.name}.\n\nYour verification code is: ${verificationOtp}\n\nThis code expires in 10 minutes.\nUse it in POST /api/v1/auth/verify-email-otp with your email address.`
   });
 
   return {
     user: publicUser(user),
-    session,
-    verificationToken: process.env.NODE_ENV === "production" ? undefined : verificationToken
+    verificationRequired: true,
+    verificationMessage: "A verification code has been sent to your email address"
+  };
+}
+
+async function resendVerificationOtp({ email }) {
+  await ensureInitialized();
+
+  const normalizedEmail = normalizeEmail(email);
+  const user = await getOrDeleteExpiredUnverifiedUserByEmail(normalizedEmail);
+
+  if (!user) {
+    throw createApiError(404, "Account not found");
+  }
+
+  if (user.isEmailVerified) {
+    throw createApiError(400, "Email is already verified");
+  }
+
+  const latestOtp = await findLatestEmailVerificationToken(user.id);
+  const cooldownSeconds = getResendCooldownSeconds(latestOtp);
+
+  if (cooldownSeconds > 0) {
+    throw createApiError(
+      429,
+      `Please wait ${cooldownSeconds} second${cooldownSeconds === 1 ? "" : "s"} before requesting another code`
+    );
+  }
+
+  const verificationOtp = await createVerificationOtp(user);
+
+  await sendEmail({
+    to: user.email,
+    subject: "Your verification code",
+    text: `Your verification code is: ${verificationOtp}\n\nThis code expires in 10 minutes.\nUse it in POST /api/v1/auth/verify-email-otp with your email address.`
+  });
+
+  return {
+    message: "A new verification code has been sent to your email address"
   };
 }
 
@@ -164,10 +256,14 @@ async function loginUser({ email, password }, expectedRole = "user") {
   await ensureInitialized();
 
   const normalizedEmail = normalizeEmail(email);
-  const user = await findUserByEmail(normalizedEmail);
+  const user = await getOrDeleteExpiredUnverifiedUserByEmail(normalizedEmail);
 
   if (!user || !verifyPassword(password, user.passwordHash)) {
     throw createApiError(401, "Invalid email or password");
+  }
+
+  if (!user.isEmailVerified) {
+    throw createApiError(403, "Email is not verified. Please verify your OTP first.");
   }
 
   if (expectedRole && user.role !== expectedRole) {
@@ -178,7 +274,7 @@ async function loginUser({ email, password }, expectedRole = "user") {
 
   return {
     user: publicUser(updatedUser),
-    session: await createSessionTokens(user)
+    session: await createSessionTokens(updatedUser)
   };
 }
 
@@ -271,7 +367,7 @@ async function updateCurrentUser(userId, updates) {
   }
 
   const nextUpdates = {};
-  let verificationToken = null;
+  let verificationOtp = null;
 
   if (updates.name !== undefined) {
     ensureName(updates.name);
@@ -305,23 +401,25 @@ async function updateCurrentUser(userId, updates) {
   const updatedUser = await updateUser(user.id, nextUpdates);
 
   if (nextUpdates.email) {
-    verificationToken = await createVerificationToken(updatedUser);
+    verificationOtp = await createVerificationOtp(updatedUser);
     await sendEmail({
       to: updatedUser.email,
-      subject: "Verify your updated email",
-      text: `Your email was changed.\n\nUse this token in POST /api/v1/auth/verify-email:\n${verificationToken}\n\nOr open this link:\n${buildAuthLink("/api/v1/auth/verify-email", verificationToken)}`
+      subject: "Your verification code",
+      text: `Your email was changed.\n\nYour verification code is: ${verificationOtp}\n\nThis code expires in 10 minutes.\nUse it in POST /api/v1/auth/verify-email-otp with your email address.`
     });
   }
 
   return {
     user: publicUser(await findUserById(user.id)),
-    verificationToken: process.env.NODE_ENV === "production" ? undefined : verificationToken
+    verificationRequired: Boolean(verificationOtp),
+    verificationMessage: verificationOtp ? "A verification code has been sent to your email address" : undefined
   };
 }
 
 async function removeUser(userId) {
   await ensureInitialized();
 
+  await revokeAllUserTokens(userId);
   const removed = await deleteUser(userId);
 
   if (!removed) {
@@ -329,6 +427,10 @@ async function removeUser(userId) {
   }
 
   return publicUser(removed);
+}
+
+async function deleteCurrentUser(userId) {
+  return removeUser(userId);
 }
 
 async function listPublicUsers() {
@@ -435,6 +537,35 @@ async function verifyEmail(token) {
   };
 }
 
+async function verifyEmailOtp({ email, otp }) {
+  await ensureInitialized();
+
+  const normalizedEmail = normalizeEmail(email);
+  const user = await getOrDeleteExpiredUnverifiedUserByEmail(normalizedEmail);
+
+  if (!user) {
+    throw createApiError(404, "Account not found");
+  }
+
+  const code = String(otp || "").trim();
+
+  if (!/^\d{6}$/.test(code)) {
+    throw createApiError(400, "A 6-digit verification code is required");
+  }
+
+  const record = await consumeEmailVerificationOtp(user.id, code);
+
+  if (!record) {
+    throw createApiError(401, "Verification code is invalid or expired");
+  }
+
+  await updateUser(user.id, { isEmailVerified: true });
+
+  return {
+    user: publicUser(await findUserById(user.id))
+  };
+}
+
 module.exports = {
   forgotPassword,
   getAccountStats,
@@ -447,8 +578,11 @@ module.exports = {
   refreshSession,
   registerUser,
   removeUser,
+  deleteCurrentUser,
+  resendVerificationOtp,
   resetPassword,
   updateCurrentUser,
   verifyAccessTokenFromHeader,
-  verifyEmail
+  verifyEmail,
+  verifyEmailOtp
 };

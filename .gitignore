@@ -23,6 +23,7 @@ coverage/
 # Build output
 dist/
 build/
+frontend/
 
 # Runtime artifacts
 *.pid

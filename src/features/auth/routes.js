@@ -4,13 +4,16 @@ const { asyncHandler } = require("../../shared/http/asyncHandler");
 const {
   forgotPassword,
   getCurrentUser,
+  deleteCurrentUser,
   loginAdmin,
   loginUser,
   logout,
   refreshSession,
   registerUser,
+  resendVerificationOtp,
   resetPassword,
-  verifyEmail
+  verifyEmail,
+  verifyEmailOtp
 } = require("../../shared/auth/authService");
 
 const router = Router();
@@ -38,8 +41,8 @@ router.post(
 
     return sendSuccess(res, 201, "Registration successful", {
       user: result.user,
-      session: result.session,
-      verificationToken: result.verificationToken
+      verificationRequired: result.verificationRequired,
+      verificationMessage: result.verificationMessage
     });
   })
 );
@@ -77,6 +80,18 @@ router.post(
   })
 );
 
+router.delete(
+  "/delete-account",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const user = await deleteCurrentUser(req.user.id);
+
+    return sendSuccess(res, 200, "Account deleted successfully", {
+      user
+    });
+  })
+);
+
 router.post(
   "/refresh-token",
   asyncHandler(async (req, res) => {
@@ -94,9 +109,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const result = await forgotPassword(req.body.email);
 
-    return sendSuccess(res, 200, result.message, {
-      resetToken: result.resetToken
-    });
+    return sendSuccess(res, 200, result.message);
   })
 );
 
@@ -121,6 +134,26 @@ router.post(
     return sendSuccess(res, 200, "Email verified successfully", {
       user: result.user
     });
+  })
+);
+
+router.post(
+  "/verify-email-otp",
+  asyncHandler(async (req, res) => {
+    const result = await verifyEmailOtp(req.body || {});
+
+    return sendSuccess(res, 200, "Email verified successfully", {
+      user: result.user
+    });
+  })
+);
+
+router.post(
+  "/resend-otp",
+  asyncHandler(async (req, res) => {
+    const result = await resendVerificationOtp(req.body || {});
+
+    return sendSuccess(res, 200, result.message);
   })
 );
 

@@ -1,7 +1,7 @@
 const crypto = require("crypto");
-const { query, withTransaction } = require("../../config/db");
-
-const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "admin@gateprep.local").trim().toLowerCase();
+const db = require("../../config/db");
+const query = (...args) => db.query(...args);
+const withTransaction = (...args) => db.withTransaction(...args);
 
 function hashToken(token) {
   return crypto.createHash("sha256").update(String(token)).digest("hex");
@@ -41,37 +41,8 @@ function mapTokenRow(row) {
   };
 }
 
-let initPromise = null;
-
-async function seedAdminAccount() {
-  const { rows } = await query(
-    `SELECT id
-     FROM users
-     WHERE lower(email) = lower($1)
-     LIMIT 1`,
-    [ADMIN_EMAIL]
-  );
-
-  if (rows[0]) {
-    return;
-  }
-
-  const adminPassword = process.env.ADMIN_PASSWORD || "Admin@1234";
-  const { hashPassword } = require("./password");
-
-  await query(
-    `INSERT INTO users (name, email, password_hash, role, is_email_verified)
-     VALUES ($1, $2, $3, 'admin', TRUE)`,
-    [process.env.ADMIN_NAME || "System Admin", ADMIN_EMAIL, hashPassword(adminPassword)]
-  );
-}
-
 async function ensureInitialized() {
-  if (!initPromise) {
-    initPromise = seedAdminAccount();
-  }
-
-  return initPromise;
+  return;
 }
 
 async function findUserById(userId) {
@@ -333,8 +304,77 @@ async function consumeEmailVerificationToken(token) {
   });
 }
 
+async function revokeAllEmailVerificationTokens(userId) {
+  await ensureInitialized();
+
+  await query(
+    `UPDATE auth_email_verification_tokens
+     SET revoked_at = NOW()
+     WHERE user_id = $1 AND revoked_at IS NULL`,
+    [userId]
+  );
+}
+
+async function storeEmailVerificationOtp(userId, otp, expiresAt) {
+  await ensureInitialized();
+
+  await query(
+    `INSERT INTO auth_email_verification_tokens (user_id, token_hash, expires_at)
+     VALUES ($1, $2, to_timestamp($3))`,
+    [userId, hashToken(otp), expiresAt]
+  );
+}
+
+async function consumeEmailVerificationOtp(userId, otp) {
+  await ensureInitialized();
+
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT id, user_id, token_hash, expires_at, revoked_at, created_at
+       FROM auth_email_verification_tokens
+       WHERE user_id = $1
+         AND token_hash = $2
+         AND revoked_at IS NULL
+         AND expires_at > NOW()
+       LIMIT 1
+       FOR UPDATE`,
+      [userId, hashToken(otp)]
+    );
+
+    if (!rows[0]) {
+      return null;
+    }
+
+    await client.query(
+      `DELETE FROM auth_email_verification_tokens
+       WHERE id = $1`,
+      [rows[0].id]
+    );
+
+    return mapTokenRow(rows[0]);
+  });
+}
+
+async function findLatestEmailVerificationToken(userId) {
+  await ensureInitialized();
+
+  const { rows } = await query(
+    `SELECT id, user_id, token_hash, expires_at, revoked_at, created_at
+     FROM auth_email_verification_tokens
+     WHERE user_id = $1
+       AND revoked_at IS NULL
+       AND expires_at > NOW()
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [userId]
+  );
+
+  return mapTokenRow(rows[0]);
+}
+
 module.exports = {
   consumeEmailVerificationToken,
+  consumeEmailVerificationOtp,
   consumePasswordResetToken,
   createUserRecord,
   deleteUser,
@@ -342,11 +382,14 @@ module.exports = {
   findRefreshToken,
   findUserByEmail,
   findUserById,
+  findLatestEmailVerificationToken,
   hashToken,
   listUsers,
   revokeAllUserTokens,
+  revokeAllEmailVerificationTokens,
   revokeRefreshToken,
   storeEmailVerificationToken,
+  storeEmailVerificationOtp,
   storePasswordResetToken,
   storeRefreshToken,
   updateUser

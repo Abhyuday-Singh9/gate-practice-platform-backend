@@ -46,8 +46,8 @@ router.post(
 
     return sendSuccess(res, 201, "User created successfully", {
       user: result.user,
-      session: result.session,
-      verificationToken: result.verificationToken
+      verificationRequired: result.verificationRequired,
+      verificationMessage: result.verificationMessage
     });
   })
 );
@@ -70,7 +70,8 @@ router.patch(
 
     return sendSuccess(res, 200, "Profile updated successfully", {
       user: result.user,
-      verificationToken: result.verificationToken
+      verificationRequired: result.verificationRequired,
+      verificationMessage: result.verificationMessage
     });
   })
 );
@@ -111,7 +112,8 @@ router.patch(
 
     return sendSuccess(res, 200, "User updated successfully", {
       user: result.user,
-      verificationToken: result.verificationToken
+      verificationRequired: result.verificationRequired,
+      verificationMessage: result.verificationMessage
     });
   })
 );

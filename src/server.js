@@ -1,13 +1,10 @@
 require("dotenv").config();
 
 const { createApp } = require("./app");
-const { ensureInitialized } = require("./shared/auth/store");
 
 const PORT = process.env.PORT || 3000;
 
 async function start() {
-  await ensureInitialized();
-
   const app = createApp();
 
   app.listen(PORT, () => {
